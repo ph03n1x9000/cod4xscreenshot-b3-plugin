@@ -217,7 +217,7 @@ class Cod4XscreenshotPlugin(b3.plugin.Plugin):
             client.message('Player is a bot. Screenshot will NOT be taken.')
             return
         self.debug('Getting screenshot for %s' % sclient.name)
-        self.console.write('getss %s %s' % (sclient.cid, sclient.name))
+        self.console.write('getss %s %s' % (sclient.cid, str(sclient.name).replace(' ', '_'))
         client.message('Screenshot of %s was taken.' % sclient.name)
         t = Thread(target=self.processloop, args=(sclient, client))
         t.start()
