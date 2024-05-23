@@ -19,7 +19,7 @@
 #  along with this program; if not, write to the Free Software
 #  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 
-__version__ = '0.0.4'
+__version__ = '0.0.5'
 __author__ = 'Sh3llK0de'
 
 
@@ -39,9 +39,10 @@ class Cod4XscreenshotPlugin(b3.plugin.Plugin):
     screenshotpath = None
     imgbb_api = None
     discordwebhook = None
-    directory_listing = []  # Stores the list of files already in the screenshot directory.
+    screenshotting = []  # Stores list of players that is currently being screenshotted.
     serverinfo = 'CoD4 Server'
     expiration = 0
+    
 
     # -------------------- PLUGIN STARTUP --------------------------
     def onStartup(self):
@@ -104,12 +105,6 @@ class Cod4XscreenshotPlugin(b3.plugin.Plugin):
             self.disable()
 
         try:
-            self.directory_listing = os.listdir(self.screenshotpath)
-            self.verbose('Saved pre-existing directory listing successfully.')
-        except Exception as error:
-            self.error(error)
-
-        try:
             self.serverinfo = self.console.stripColors(self.console.getCvar('sv_hostname').value)
             self.verbose('sv_hostname captured as server name: %s' % self.serverinfo)
         except Exception as err:
@@ -128,44 +123,53 @@ class Cod4XscreenshotPlugin(b3.plugin.Plugin):
     # ------------------- SCREENSHOT HANDLING -------------------------
     def processloop(self, client, admin):
         """
-        Uses a threaded loop to process post screenshot functions.
+        Uses a threaded loop to process screenshot.
         :client: The client whose screenshot was taken.
         """
+        self.debug('Getting screenshot of %s' % client.name)
+        # Use partial GUID and a timestring as name of file. Ensures no illegal chars are used.
+        screenshot_name = str(client.guid)[9:] + "_" + str(int(time.time()))
+        # The name will be unique due to unix timestamp in file name, so we know what the file will be named.
+        screenshot_name_full = self.screenshotpath + screenshot_name + '0000.jpg'
+        # Send command to server to take screenshot.
+        self.console.write('getss %s %s' % (client.cid, screenshot_name))
+        self.screenshotting.append(client)
+        time.sleep(5)
+
         tries, failed = (0, True)
-        while tries < 24:
-            # Retry for 2 minutes. Screenshots can take time to be retrieved by server depending on connection strength.
+        wait_interval = 2
+        while tries < 60:
             tries += 1
-            self.verbose('Attempt %s of 24: Processing screenshot for %s' % (tries, client.name))
-            time.sleep(5)
-            for ss in os.listdir(self.screenshotpath):
-                if ss in self.directory_listing:
-                    # This file was previously processed.
-                    continue
-                if time.time() - os.path.getmtime(self.screenshotpath + ss) > 20:
-                    # Current file was created too long ago. Continue to next file.
-                    continue
-                matched_letters = 0
-                # Compare file name and player name. Correct file should match.
-                for plr_letter, ss_letter in zip(client.name, ss):
-                    if plr_letter == ss_letter or ss_letter == '_':
-                        matched_letters += 1
-                if matched_letters != len(client.name):
-                    # Name of file and player name do not match. This is not the needed file. Continue to next file.
-                    continue
-                # We have the file we need to process. Go forward.
-                self.directory_listing.append(ss)
-                self.debug('Processing screenshot of %s' % client.name)
-                # Upload file to ImgBB and get share link.
-                link = self.imgbb_upload(ss)
-                # Call function to send link to Discord server and give it the link.
-                self.discordsend(link, client, admin)
-                self.verbose('Processed screenshot for %s successfully. Sending to Discord.' % client.name)
-                tries = 24  # This will stop the while loop.
-                failed = False  # Will prevent error message after while loop terminates.
-                # If we made it this far it means everything was successful. Break out of this loop.
+            time.sleep(2)
+            self.verbose('File exists check: Try %s/60 for screenshot of %s' % (tries, client.name))
+            if os.path.exists(screenshot_name_full):
+                failed = False
                 break
+
+        self.screenshotting.remove(client)
+        # Check if we found the file.
         if failed:
             self.error('Too many attempts to process screenshot for %s. Cancelled' % client.name)
+            admin.message('Error encountered when capturing screenshot of %s.' % client.name)
+            return
+      
+        # Upload file to ImgBB and get share link.
+        link = self.imgbb_upload(screenshot_name_full)
+        if link is None or 'data' not in link or 'url' not in link['data']:
+            self.error('Received null response from ImgBB: player: %s filename: %s' % (client.name, screenshot_name))
+            admin.message('Failed to upload image to hosting service.')
+            return
+
+        link = link['data']['url']
+        # Call function to send link to Discord server and give it the link.
+        sent = self.discordsend(link, client, admin)
+        if not sent:
+            admin.message('Error uploading screenshot of %s to Discord' % client.name)
+            return
+
+        self.verbose('Processed screenshot for %s successfully. Sending to Discord.' % client.name)
+        admin.message('^2Screenshot if %s ^2ready for viewing.' % client.name)
+        
 
     def imgbb_upload(self, image):
         """
@@ -175,14 +179,14 @@ class Cod4XscreenshotPlugin(b3.plugin.Plugin):
         if not image:
             self.error('No image entered. Cancelled.')
             return
-        with open(self.screenshotpath + image, 'rb') as filetoupload:
+        with open(image, 'rb') as filetoupload:
             payload = {'key': self.imgbb_api, 'image': b64encode(filetoupload.read())}
             if self.expiration:
                 payload['expiration'] = self.expiration
             response = requests.post('https://api.imgbb.com/1/upload', payload)
         link = response.json()
         filetoupload.close()
-        return link['data']['url']
+        return link
 
     def discordsend(self, imageURL, client, admin):
         """
@@ -198,8 +202,10 @@ class Cod4XscreenshotPlugin(b3.plugin.Plugin):
             result.raise_for_status()
         except requests.exceptions.HTTPError as err:
             self.error(err)
+            return False
         else:
             self.verbose("Sent message successfully, code: %s." % result.status_code)
+            return True
 
     # ------------------------- COMMANDS -------------------------------
     def cmd_screenshot(self, data, client, cmd=None):
@@ -211,14 +217,13 @@ class Cod4XscreenshotPlugin(b3.plugin.Plugin):
             return
         sclient = self.adminPlugin.findClientPrompt(data, client)
         if not sclient:
-            client.message('Could not find supplied player')
             return
         if sclient.bot:
             client.message('Player is a bot. Screenshot will NOT be taken.')
             return
-        self.debug('Getting screenshot for %s' % sclient.name)
-        self.console.write('getss %s %s' % (sclient.cid, str(sclient.name).replace(' ', '_')))
-        client.message('Screenshot of %s was taken.' % sclient.name)
+        if sclient in self.screenshotting:
+            client.message('%s already has a screenshot in processing. Stand by.')
+            return
         t = Thread(target=self.processloop, args=(sclient, client))
         t.start()
-
+        client.message('^2Taking screenshot of %s ^2. Stand by...' % sclient.name)
