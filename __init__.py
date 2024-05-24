@@ -19,7 +19,7 @@
 #  along with this program; if not, write to the Free Software
 #  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
 
-__version__ = '0.0.5'
+__version__ = '0.0.6'
 __author__ = 'Sh3llK0de'
 
 
@@ -83,7 +83,21 @@ class Cod4XscreenshotPlugin(b3.plugin.Plugin):
         try:
             savepath = self.console.getCvar('fs_savepath').value
             self.screenshotpath = savepath + '/screenshots/'
+            if self.screenshotpath is None:
+                raise Exception('screenshot path is None')
+            if not os.path.exists(self.screenshotpath):
+                raise Exception('screenshotpath is not a valid path.')
             self.verbose('Screenshot path: %s' % self.screenshotpath)
+        except AttributeError:
+            try:
+                self.screenshotpath = self.config.get('settings', 'savepath')
+                self.verbose('settings::savepath loaded: %s' % self.screenshotpath)
+                if len(self.screenshotpath) > 12 and 'screenshots' in self.screenshotpath[-12:]:
+                    self.screenshotpath = str(self.screenshotpath).replace('screenshots', '')
+            except Exception as e:
+                self.error(e)
+                self.debug('Cannot load screenshot path. PLUGIN DISABLED.')
+                self.disable()
         except Exception as error:
             self.error(error)
             self.debug("Could not retrieve fs_savepath from server. PLUGIN DISABLED.")
